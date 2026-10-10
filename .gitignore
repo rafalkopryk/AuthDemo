@@ -1,0 +1,15 @@
+# .NET build output
+[Bb]in/
+[Oo]bj/
+
+# Visual Studio
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Logs and OS files
+*.log
+.DS_Store
+Thumbs.db

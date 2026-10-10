@@ -1,0 +1,44 @@
+@Loans_HostAddress = http://localhost:5253
+
+GET {{Loans_HostAddress}}/openapi/v1.json
+Accept: application/json
+
+###
+
+# @name createLoanApplication
+POST {{Loans_HostAddress}}/loan-applications
+Content-Type: application/json
+
+{
+  "clientId": "b43c60eb-b63a-4a1a-9c63-9141ba6e873d",
+  "applicantName": "Jan Kowalski",
+  "amount": 50000,
+  "termMonths": 36,
+  "purpose": "Zakup samochodu"
+}
+
+###
+
+@applicationId = {{createLoanApplication.response.body.$.id}}
+
+GET {{Loans_HostAddress}}/loan-applications/{{applicationId}}
+Accept: application/json
+
+###
+
+PUT {{Loans_HostAddress}}/loan-applications/{{applicationId}}
+Content-Type: application/json
+
+{
+  "clientId": "b43c60eb-b63a-4a1a-9c63-9141ba6e873d",
+  "applicantName": "Jan Kowalski",
+  "amount": 60000,
+  "termMonths": 48,
+  "purpose": "Zakup samochodu"
+}
+
+###
+
+POST {{Loans_HostAddress}}/loan-applications/{{applicationId}}/submit
+
+###

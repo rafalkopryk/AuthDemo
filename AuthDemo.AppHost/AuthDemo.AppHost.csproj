@@ -1,0 +1,19 @@
+<Project Sdk="Aspire.AppHost.Sdk/13.6.1">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net11.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AspireUseCliBundle>true</AspireUseCliBundle>
+    <NoWarn>$(NoWarn);ASPIREPROJECTS001</NoWarn>
+    <UserSecretsId>9291518f-05cb-4b3d-b2e2-cc4bc7988115</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Aspire.Hosting.Dotnet" Version="13.6.1-preview.1.26506.6" />
+    <PackageReference Include="Aspire.Hosting.EntityFrameworkCore" Version="13.6.1-preview.1.26506.6" />
+    <PackageReference Include="Aspire.Hosting.PostgreSQL" Version="13.6.1" />
+  </ItemGroup>
+
+</Project>
