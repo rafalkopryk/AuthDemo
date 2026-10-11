@@ -1,53 +1,48 @@
+using System.Security.Claims;
+using Loans.Features.LoanApplications;
+
 namespace Loans;
 
 public static class LoanApplicationEndpoints
 {
     public static void MapLoanApplicationEndpoints(this WebApplication app)
     {
-        var group = app.MapGroup("/loan-applications").WithTags("Loan applications");
+        var group = app.MapGroup("/loan-applications").WithTags("Loan applications")
+            .RequireAuthorization();
 
-        group.MapPost("/", async (LoanApplicationRequest request, LoanApplicationStore store, CancellationToken cancellationToken) =>
+        group.MapGet("/", async (ListLoanApplications handler, ClaimsPrincipal user,
+            CancellationToken cancellationToken, int skip = 0, int take = 20) =>
         {
-            var errors = request.Validate();
-            if (errors.Count > 0)
-                return Results.ValidationProblem(errors);
+            return (await handler.HandleAsync(user, new ListLoanApplicationsQuery(skip, take), cancellationToken)).ToHttpResult();
+        })
+            .WithName("ListLoanApplications").RequireAuthorization(ApiSecurity.ReadPolicy);
 
-            var application = await store.CreateAsync(request, cancellationToken);
-            return Results.Created($"/loan-applications/{application.Id}", application);
-        }).WithName("CreateLoanApplication");
-
-        group.MapGet("/{id:guid}", async (Guid id, LoanApplicationStore store, CancellationToken cancellationToken) =>
-            await store.GetAsync(id, cancellationToken) is { } application
-                ? Results.Ok(application)
-                : Results.NotFound())
-            .WithName("GetLoanApplication");
-
-        group.MapPut("/{id:guid}", async (Guid id, LoanApplicationRequest request, LoanApplicationStore store, CancellationToken cancellationToken) =>
+        group.MapPost("/", async (LoanApplicationRequest request, CreateLoanApplication handler,
+            ClaimsPrincipal user, CancellationToken cancellationToken) =>
         {
-            var errors = request.Validate();
-            if (errors.Count > 0)
-                return Results.ValidationProblem(errors);
+            return (await handler.HandleAsync(user, new CreateLoanApplicationCommand(request), cancellationToken)).ToHttpResult();
+        })
+            .WithName("CreateLoanApplication").RequireAuthorization(ApiSecurity.CreatePolicy);
 
-            var (application, conflict) = await store.UpdateAsync(id, request, cancellationToken);
-            if (application is null)
-                return Results.NotFound();
-
-            return conflict
-                ? Results.Problem(statusCode: StatusCodes.Status409Conflict,
-                    detail: "Only draft applications can be updated.")
-                : Results.Ok(application);
-        }).WithName("UpdateLoanApplication");
-
-        group.MapPost("/{id:guid}/submit", async (Guid id, LoanApplicationStore store, CancellationToken cancellationToken) =>
+        group.MapGet("/{id:guid}", async (Guid id, GetLoanApplication handler,
+            ClaimsPrincipal user, CancellationToken cancellationToken) =>
         {
-            var (application, conflict) = await store.SubmitAsync(id, cancellationToken);
-            if (application is null)
-                return Results.NotFound();
+            return (await handler.HandleAsync(user, new GetLoanApplicationQuery(id), cancellationToken)).ToHttpResult();
+        })
+            .WithName("GetLoanApplication").RequireAuthorization(ApiSecurity.ReadPolicy);
 
-            return conflict
-                ? Results.Problem(statusCode: StatusCodes.Status409Conflict,
-                    detail: "The application has already been submitted.")
-                : Results.Ok(application);
-        }).WithName("SubmitLoanApplication");
+        group.MapPut("/{id:guid}", async (Guid id, LoanApplicationRequest request,
+            UpdateLoanApplication handler, ClaimsPrincipal user, CancellationToken cancellationToken) =>
+        {
+            return (await handler.HandleAsync(user, new UpdateLoanApplicationCommand(id, request), cancellationToken)).ToHttpResult();
+        })
+            .WithName("UpdateLoanApplication").RequireAuthorization(ApiSecurity.EditPolicy);
+
+        group.MapPost("/{id:guid}/submit", async (Guid id, SubmitLoanApplication handler,
+            ClaimsPrincipal user, CancellationToken cancellationToken) =>
+        {
+            return (await handler.HandleAsync(user, new SubmitLoanApplicationCommand(id), cancellationToken)).ToHttpResult();
+        })
+            .WithName("SubmitLoanApplication").RequireAuthorization(ApiSecurity.SubmitPolicy);
     }
 }

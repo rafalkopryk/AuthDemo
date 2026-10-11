@@ -32,11 +32,22 @@ partial class LoansDbContextModelSnapshot : ModelSnapshot
                 .HasMaxLength(200)
                 .HasColumnType("character varying(200)");
 
+            entity.Property<Guid?>("BranchId")
+                .HasColumnType("uuid");
+
+            entity.Property<string>("Channel")
+                .HasMaxLength(16)
+                .HasColumnType("character varying(16)");
+
             entity.Property<Guid>("ClientId")
                 .HasColumnType("uuid");
 
             entity.Property<DateTimeOffset>("CreatedAt")
                 .HasColumnType("timestamp with time zone");
+
+            entity.Property<string>("Product")
+                .HasMaxLength(64)
+                .HasColumnType("character varying(64)");
 
             entity.Property<string>("Purpose")
                 .HasMaxLength(2000)

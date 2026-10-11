@@ -15,6 +15,8 @@ public sealed class LoansDbContext(DbContextOptions<LoansDbContext> options) : D
         application.Property(item => item.ApplicantName).HasMaxLength(200).IsRequired();
         application.Property(item => item.Amount).HasPrecision(18, 2);
         application.Property(item => item.Purpose).HasMaxLength(2000);
+        application.Property(item => item.Channel).HasMaxLength(16);
+        application.Property(item => item.Product).HasMaxLength(64);
         application.Property(item => item.Status).HasConversion<int>();
     }
 }
