@@ -11,9 +11,10 @@ public static class LoanApplicationEndpoints
             .RequireAuthorization();
 
         group.MapGet("/", async (ListLoanApplications handler, ClaimsPrincipal user,
-            CancellationToken cancellationToken, int skip = 0, int take = 20) =>
+            CancellationToken cancellationToken, int skip = 0, int take = 20,
+            Guid? clientId = null, string? product = null, Guid? branchId = null, string? channel = null) =>
         {
-            return (await handler.HandleAsync(user, new ListLoanApplicationsQuery(skip, take), cancellationToken)).ToHttpResult();
+            return (await handler.HandleAsync(user, new ListLoanApplicationsQuery(skip, take, clientId, product, branchId, channel), cancellationToken)).ToHttpResult();
         })
             .WithName("ListLoanApplications").RequireAuthorization(ApiSecurity.ReadPolicy);
 

@@ -1,5 +1,18 @@
 @Loans_HostAddress = http://localhost:5253
 
+### Wyszukiwanie w dozwolonym zakresie; ustaw token klienta/pracownika
+@accessToken = REPLACE_WITH_TOKEN
+GET {{Loans_HostAddress}}/loan-applications/?product=retail-loan&skip=0&take=20
+Authorization: Bearer {{accessToken}}
+Accept: application/json
+
+### Opcjonalny klient; obcy klient dla scope Own daje 403
+GET {{Loans_HostAddress}}/loan-applications/?clientId=11111111-1111-1111-1111-111111111111&product=retail-loan
+Authorization: Bearer {{accessToken}}
+Accept: application/json
+
+###
+
 GET {{Loans_HostAddress}}/openapi/v1.json
 Accept: application/json
 

@@ -92,7 +92,11 @@ Sprawdza ono istnienie nadania uprawnienia, z uwzględnieniem wymaganych claimó
 
 ## Warunki domenowe
 
-Gdy grant ma dodatkowe pola, użyj `AddCreditAuthroization<MyGrantOptions>(...)`, gdzie `MyGrantOptions : PermissionGrantOptions`. `.Require((user, grant, resource) => ...)` dodaje warunek do każdego grantu bez mieszania ograniczeń między grantami. `options.ValidateWith(...)` waliduje dodatkowe pola przy starcie. Opcjonalne `options.EvaluateWhen(...)` odrzuca grant już podczas rozwiązywania uprawnień, np. dla niepoprawnych claimów domenowych. Delegaty działają współbieżnie, więc muszą być bezpieczne dla wielu żądań i nie przechowywać ich stanu.
+Gdy grant ma dodatkowe pola, użyj `AddCreditAuthroization<MyGrantOptions>(...)`, gdzie `MyGrantOptions : PermissionGrantOptions`. `.Require((user, grant, resource) => ...)` dodaje warunek do każdego grantu bez mieszania ograniczeń między grantami. `options.ValidateWith(...)` waliduje dodatkowe pola przy starcie.
+
+`options.EvaluateWhen((user, grant) => ...)` to opcjonalny, synchroniczny warunek użycia pojedynczego grantu. Otrzymuje użytkownika i grant, ale nie konkretny zasób. Zwrócenie `false` wyłącza ten grant podczas rozwiązywania uprawnień; może więc odrzucić grant już przy `PermissionPresenceRequirement`. Na przykład Loans odrzuca grant, gdy jego ograniczenia produktów lub kanałów nie przecinają się z claimami użytkownika. Nie trzeba rejestrować `EvaluateWhen`, jeżeli role i scope'y wystarczają.
+
+Do warunku zależnego od pól zasobu użyj `.Require((user, grant, resource) => ...)` albo własnego `.Scope<TScope>(...)` z `IResourceScope<TResource>`, gdy sprawdzenie potrzebuje DI lub operacji asynchronicznej. Pobranie roli użytkownika z bazy lub API musi nastąpić po uwierzytelnieniu, przed rozwiązywaniem grantów; `EvaluateWhen` nie służy do takiego lookupu. Delegaty `EvaluateWhen` i `Require` działają współbieżnie, więc nie powinny przechowywać stanu żądania.
 
 Przy tworzeniu zasobu zwaliduj kompletne żądanie, a następnie autoryzuj dedykowany zasób utworzony z jego danych. Handler autoryzacji nie uzupełnia ani nie zmienia zasobu.
 
@@ -106,7 +110,7 @@ var visible = await resourceAuthorization.FilterAsync(
     user, documents, "documents.read", cancellationToken);
 ```
 
-Dla własnych opcji wstrzyknij `ResourceAuthorization<MyGrantOptions>`. Helper wyznacza granty raz, a potem używa tych samych reguł co `AuthorizeAsync`. Działa na załadowanych obiektach, bez tłumaczenia na SQL. Nie rozwiązuje stronicowania ani liczenia rekordów w bazie. W Loans filtrowanie następuje w pamięci przed `Skip`/`Take`.
+Dla własnych opcji wstrzyknij `ResourceAuthorization<MyGrantOptions>`. Helper wyznacza granty raz, a potem używa tych samych reguł co `AuthorizeAsync`. Działa na załadowanych obiektach, bez tłumaczenia na SQL. Nie rozwiązuje stronicowania ani liczenia rekordów w bazie. Aktualna lista Loans korzysta z osobnego zakresu odczytu w serwisie Loans i przekłada go na zapytanie do bazy przed `Skip`/`Take`; paczka nie zależy od EF Core.
 
 ## Dedykowany model zasobu
 

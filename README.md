@@ -153,14 +153,14 @@ Obsługa ról używa [RoleClaimType i ról ASP.NET Core](https://learn.microsoft
 Serwisy i wyniki operacji znajdują się w `Loans/Features/LoanApplications`:
 
 - Każda operacja ma osobną klasę z metodą `HandleAsync`: `ListLoanApplications`, `GetLoanApplication`, `CreateLoanApplication`, `UpdateLoanApplication`, `SubmitLoanApplication`. Klasy sprawdzają uprawnienia przez `IAuthorizationService`, walidują żądania i obsługują operacje biznesowe.
-- Każda operacja korzysta bezpośrednio z `LoansDbContext`; reguły stanu i niezmiennych pól pozostają przy zapisie wniosku.
+- Operacje na pojedynczym wniosku korzystają z `LoansDbContext`; lista używa `LoanApplicationReader`, który ogranicza zapytanie w bazie przed paginacją. Reguły stanu i niezmiennych pól pozostają przy zapisie wniosku.
 - `LoanApplicationResult<T>` to natywny union C# 15 dla operacji zwracających dane. `Update` i `Submit` używają `LoanApplicationMutationResult`; po sukcesie zwracają `204 No Content`. `LoanApplicationHttpResults` mapuje wyniki na odpowiedzi API.
 
 Endpointy wstrzykują klasy operacji i mapują wynik na HTTP. `Get`, `Update` i `Submit` pobierają encję i tworzą z niej `LoanApplicationResource`: niemutowalny rekord z `ClientId`, `BranchId`, `Product` i `Channel`. Tylko ten dedykowany zasób trafia do `IAuthorizationService.AuthorizeAsync` z `PermissionRequirement`. Pełna encja i request nie są zarejestrowanymi zasobami autoryzacji. Brak dostępu do istniejącego wniosku zwraca `403`, również przy bezpośrednim wywołaniu operacji. `Update` autoryzuje zapisane dane przed walidacją i zmianą pól; dane przesłane przez użytkownika nie decydują o dostępie do istniejącego wniosku.
 
 `Create` wymaga jawnego kanału (oraz `branchId` dla kanału `branch`), waliduje żądanie i autoryzuje `LoanApplicationResource.From(request)` bez przygotowywania wartości domyślnych. Zakresy są zadeklarowane raz w `LoanAuthorizationRegistration`; produkty i kanały sprawdza `LoanGrantConditions`.
 
-Polityki endpointów używają `PermissionPresenceRequirement` jako wstępnego sprawdzenia operacji (`403` przy braku nadania). Nie zastępuje ono autoryzacji konkretnego zasobu. `PermissionRequirement` z pustym lub niezarejestrowanym zasobem odmawia dostępu. Lista korzysta z `ResourceAuthorization<LoanGrantOptions>.FilterAsync`, projektując każdą encję na dedykowany zasób. Dopiero autoryzowane rekordy podlegają `Skip`/`Take`. To prosty wariant dla małych kolekcji: pobiera kandydatów z bazy i sprawdza ich w pamięci, bez odrębnych predykatów EF Core.
+Polityki endpointów używają `PermissionPresenceRequirement` jako wstępnego sprawdzenia operacji (`403` przy braku nadania). Nie zastępuje ono autoryzacji konkretnego zasobu. `PermissionRequirement` z pustym lub niezarejestrowanym zasobem odmawia dostępu. Lista korzysta z `LoanQueryAuthorization`, który wyznacza dozwolony zakres z tych samych grantów. `LoanApplicationReader` nakłada ograniczenia oraz filtry użytkownika w bazie przed `Skip`/`Take`; nie pobiera całej kolekcji do autoryzacji w pamięci.
 
 Mechanizm korzysta z [autoryzacji zasobów ASP.NET Core](https://learn.microsoft.com/en-us/aspnet/core/security/authorization/resource-based?view=aspnetcore-10.0).
 
@@ -181,7 +181,7 @@ Wewnętrzne uprawnienia to `loans.read`, `loans.create`, `loans.edit`, `loans.su
 | `OwnBranch` | Jeden poprawny `branch_id` lub `employee_id` i zarejestrowany `IEmployeeBranchResolver` | Własny oddział oraz kanał `branch` |
 | `All` | Uwierzytelniony aktor | Bez ograniczenia właściciela/oddziału; pozostałe filtry nadal obowiązują |
 
-Brak wymaganego identyfikatora wyłącza dane nadanie, zamiast rozszerzać je na wszystkie zasoby. Wewnątrz jednego nadania warunki łączą się przez AND; całe nadania dla danej operacji łączą się przez OR. Podpisane ograniczenia `allowed_product` i `allowed_channel` dodatkowo przecinają każde nadanie. Pominięty filtr oznacza brak ograniczenia, pusta tablica oznacza brak dostępu w ramach nadania. Listy są autoryzowane w pamięci tymi samymi regułami zasobów, przed stronicowaniem. Resolver oddziału jest opcjonalny: aby obsłużyć tokeny z samym `employee_id`, zaimplementuj `IEmployeeBranchResolver.ResolveAsync(string employeeId, CancellationToken)` i zarejestruj go w `Program.cs` przez `builder.Services.AddScoped<IEmployeeBranchResolver, MyEmployeeBranchResolver>()`. Może używać bazy lub API pracowników; wynik jest zapamiętywany na czas jednego zakresu DI, więc filtrowanie listy nie odpytuje źródła dla każdego wniosku.
+Brak wymaganego identyfikatora wyłącza dane nadanie, zamiast rozszerzać je na wszystkie zasoby. Wewnątrz jednego nadania warunki łączą się przez AND; całe nadania dla danej operacji łączą się przez OR. Podpisane ograniczenia `allowed_product` i `allowed_channel` dodatkowo przecinają każde nadanie. Pominięty filtr oznacza brak ograniczenia, pusta tablica oznacza brak dostępu w ramach nadania. Listy korzystają z zakresów odczytu `All`, `Own` i `OwnBranch`; ograniczenia produktów i kanałów oraz ustalanie oddziału są współdzielone z autoryzacją pojedynczego zasobu. Resolver oddziału jest opcjonalny: aby obsłużyć tokeny z samym `employee_id`, zaimplementuj `IEmployeeBranchResolver.ResolveAsync(string employeeId, CancellationToken)` i zarejestruj go w `Program.cs` przez `builder.Services.AddScoped<IEmployeeBranchResolver, MyEmployeeBranchResolver>()`. Może używać bazy lub API pracowników; wynik jest zapamiętywany na czas jednego zakresu DI, więc kolejne granty nie odpytują źródła ponownie.
 
 Przykład roli z odczytem wszystkich wniosków i edycją tylko własnego oddziału (fragment do dodania pod `Roles`):
 
@@ -228,6 +228,113 @@ Nowe role i nowe kombinacje istniejących uprawnień, produktów, kanałów i za
 `ConfigurableAuthorization` jest osobnym projektem ASP.NET Core, niezależnym od modeli biznesowych, Entity Framework i sposobu walidowania JWT. Zawiera mapowanie claimów, konfigurację i jej walidację, rozwiązywanie uprawnień oraz `AuthorizationHandler`. Instrukcja użycia i punkty rozszerzeń są w [ConfigurableAuthorization/README.md](ConfigurableAuthorization/README.md).
 
 `Loans` deklaruje dedykowany `LoanApplicationResource` w `LoanAuthorizationRegistration`, korzystając z gotowego zakresu `Own` oraz własnej implementacji `OwnBranch` przez DI. `LoanGrantOptions` opisuje konfigurację domenową, a `LoanGrantConditions` sprawdza produkty i kanały. Konfiguracja ról ma teraz strukturę `Roles → nazwa roli → Services → loans → Grants`; wspólne mapowania mogą być używane przez kilka serwisów. Paczka dostarcza też prosty helper `ResourceAuthorization<TGrant>.FilterAsync` dla załadowanych kolekcji.
+
+### Wyszukiwanie w dozwolonym zakresie
+
+`GET /loan-applications/?clientId=...&product=retail-loan&branchId=...&channel=branch&skip=0&take=20`
+
+Wszystkie filtry są opcjonalne. Brak `clientId` oznacza wyszukiwanie w dozwolonym zakresie (np. własne wnioski klienta). Jawny filtr lub kombinacja filtrów sprzeczna ze wszystkimi dostępnymi grantami daje **403**. Parametry nie są nadpisywane. Dozwolone wyszukiwanie bez pasujących rekordów daje **200** i pustą listę; niepoprawny format parametru daje **400**. Użytkownik z dostępem oddziałowym może podać dowolny `clientId`, ale otrzyma wyłącznie jego wnioski w swoim oddziale.
+
+`LoanQueryAuthorization.AuthorizeAsync(user, query, cancellationToken)` zwraca `AuthorizedLoanQuery` albo `null` oznaczający odmowę. Zapytanie zawiera filtry użytkownika oraz alternatywy `LoanReadRestriction`: wewnątrz jednej alternatywy obowiązuje AND, między alternatywami OR. `null` w ograniczeniu oznacza brak ograniczenia danego pola, a pusta tablica produktów/kanałów oznacza brak dostępu. Zakres `All` nadal podlega ograniczeniom produktów i kanałów.
+
+`LoanApplicationReader` przyjmuje wyłącznie `AuthorizedLoanQuery`. To jedyne miejsce tłumaczące ograniczenia na EF Core; inny czytnik może zastosować je w SQL lub zewnętrznym API, przed paginacją i liczeniem wyników. Samo przekazanie parametrów do zewnętrznego API nie wystarcza, jeśli API nie potrafi wymusić całego zakresu. Paczka `ConfigurableAuthorization` pozostaje niezależna od warstwy danych.
+
+#### Własny scope dla listy
+
+Autoryzacja zasobu przez `.Scope<MyScope>("MyScope")` nadal wymaga `IResourceScope<LoanApplicationResource>`. Aby ten scope przyznawał także dostęp do listy, dodaj w Loans implementację `ILoanReadScope` z tą samą nazwą i zarejestruj ją:
+
+```csharp
+services.AddScoped<ILoanReadScope, MyLoanReadScope>();
+```
+
+`Name` zwraca `"MyScope"`; `ResolveAsync(user, cancellationToken)` zwraca `LoanReadRestriction` opisujące zakres albo `null`, jeśli nie można ustalić dostępu. Implementacja może korzystać z DI, np. pobrać oddział z API. Produkty i kanały grantu oraz tokena są następnie automatycznie przecinane z tym zakresem. Przykładem jest `BranchLoanReadScope`, współdzielący ustalanie oddziału z `EmployeeBranchScope`.
+
+Scope bez implementacji odczytu nie przyznaje dostępu do listy; inne obsługiwane granty mogą nadal przyznawać dostęp. Nazwy implementacji odczytu muszą być unikalne. Dowolnego kodu `AllowsAsync` nie da się automatycznie przetłumaczyć na zapytanie. Jeśli nowa reguła wymaga ograniczeń innych niż klient, oddział, produkt i kanał, rozszerz model zakresu, czytnik i testy zgodności z autoryzacją zasobu. Tak samo należy odwzorować dodatkowe warunki `.Require(...)`; w tym przykładzie wspólne reguły zapewnia `LoanGrantConditions`.
+
+Test tłumaczenia zapytań na PostgreSQL działa bez bazy. Test wykonania można włączyć, ustawiając `LOANS_TEST_POSTGRES` na connection string do testowego PostgreSQL przed `dotnet test`. Korzysta z tabeli tymczasowej w transakcji, bez migracji ani usuwania danych.
+
+### Przykład integracji: serwis Disbursement
+
+Poniższy przykład pokazuje konfigurację nowego serwisu korzystającego z paczki; nie jest implementacją Disbursement w tym repozytorium. Serwis A zleca automatyczne uruchomienie, serwis B odczytuje historię po `clientId`, a pracownik o znanym XNUC i nadanej roli pobiera uruchomienie i może je ponowić. Klient nie otrzymuje dostępu. Każda operacja ma osobne uprawnienie:
+
+| Operacja | Uprawnienie | Aktor |
+| --- | --- | --- |
+| Zlecenie automatycznego uruchomienia | `disbursements.request` | serwis A |
+| Ponowienie | `disbursements.retry` | uprawniony pracownik |
+| Pobranie po ID | `disbursements.read` | uprawniony pracownik |
+| Historia po wymaganym `clientId` | `disbursements.search-by-client` | serwis B |
+
+Najpierw Disbursement musi uwierzytelniać tokeny: walidować podpis, wystawcę, odbiorcę i czas ważności. Musi też rozpoznać token techniczny lub pracowniczy oraz zaufany identyfikator aplikacji wywołującej. W przykładzie są to `token_type` i `azp`; rzeczywiste claimy oraz sposób odróżnienia tokenu usługi od tokenu użytkownika zależą od dostawcy tożsamości. `clientId` w URL oznacza klienta biznesowego, a nie identyfikator wywołującej aplikacji.
+
+Przykładowe zasoby to trzy zwykłe rekordy. Dwa pierwsze mogą później zyskać pola potrzebne do bardziej szczegółowych reguł:
+
+```csharp
+public sealed record DisbursementRequestResource(Guid ClientId, Guid LoanId);
+public sealed record DisbursementResource(Guid Id, Guid ClientId);
+public sealed record DisbursementsByClientResource(Guid ClientId);
+
+services.AddCreditAuthroization(options =>
+{
+    options.Service("disbursements");
+    options.Definition.ActorClaimType = "token_type";
+    options.Definition.ActorTypes.UnionWith(["technical", "employee"]);
+    // Bez DefaultActor: brak albo wielokrotność typu aktora odmawia dostępu.
+
+    options.Resource<DisbursementRequestResource>()
+        .Permissions("disbursements.request").AllowAll();
+    options.Resource<DisbursementResource>()
+        .Permissions("disbursements.retry", "disbursements.read").AllowAll();
+    options.Resource<DisbursementsByClientResource>()
+        .Permissions("disbursements.search-by-client").AllowAll();
+});
+services.AddAuthorization();
+```
+
+`All` nie przyznaje uprawnienia każdemu użytkownikowi. Oznacza brak dodatkowego ograniczenia pól zasobu dla aktora, który otrzymał już właściwy grant. W tym przykładzie pracownik z rolą może odczytać i ponowić **każde** uruchomienie. Jeżeli obowiązuje ograniczenie do przydzielonych spraw, oddziału lub zespołu, należy dodać własny scope sprawdzający to na `DisbursementResource` i nadać pracownikowi ten scope zamiast `All`. Stan pozwalający na ponowienie, idempotencja i audyt są odrębnymi regułami serwisu Disbursement.
+
+W `Authorization:RoleMappings` dodaj mapowania aktorów na role aplikacji. Wartości `service-a`, `service-b` i `retry_operator` są tylko przykładami:
+
+```json
+[
+  { "Actor": "technical", "ClaimType": "azp", "Value": "service-a", "Role": "disbursement_initiator" },
+  { "Actor": "technical", "ClaimType": "azp", "Value": "service-b", "Role": "disbursement_history_reader" },
+  { "Actor": "employee", "ClaimType": "verified_disbursement_role", "Value": "retry_operator", "Role": "disbursement_operator" }
+]
+```
+
+W `Authorization:Roles` dodaj granty pod `Services:disbursements`:
+
+```json
+{
+  "disbursement_initiator": { "Services": { "disbursements": { "Grants": [
+    { "Permissions": ["disbursements.request"], "Scope": "All" }
+  ] } } },
+  "disbursement_history_reader": { "Services": { "disbursements": { "Grants": [
+    { "Permissions": ["disbursements.search-by-client"], "Scope": "All" }
+  ] } } },
+  "disbursement_operator": { "Services": { "disbursements": { "Grants": [
+    { "Permissions": ["disbursements.retry", "disbursements.read"], "Scope": "All" }
+  ] } } }
+}
+```
+
+XNUC identyfikuje pracownika, lecz sam nie nadaje roli. Jeśli rola pochodzi z zaufanego tokenu, mapowanie może wskazywać jej claim. Jeśli pochodzi z bazy lub API, po walidacji tokenu odczytaj ją po XNUC i dodaj własny claim `verified_disbursement_role=retry_operator` **przed** autoryzacją. Usuń przychodzący claim o tej nazwie, zanim dodasz wartość z Waszego źródła; przy braku XNUC, roli lub przy błędzie lookupu nie dodawaj jej. Przykładowym miejscem tej operacji jest `JwtBearerEvents.OnTokenValidated`. Paczka sama nie wykonuje lookupu ról. Jej `IClaimsTransformation` tworzy wewnętrzne `app_role` z dostarczonych, zaufanych claimów; przychodzącemu `app_role` nie ufa.
+
+W handlerach użyj `IAuthorizationService` z `PermissionRequirement`. Dla ponowienia i pobrania po ID najpierw załaduj rekord i zbuduj `DisbursementResource` z zapisanych danych. Dla zlecenia najpierw zwaliduj żądanie i zbuduj `DisbursementRequestResource`. Dla historii wymagaj poprawnego `clientId`, autoryzuj `DisbursementsByClientResource(clientId)`, a dopiero potem pytaj źródło danych o rekordy z tym `clientId`:
+
+```csharp
+var resource = new DisbursementsByClientResource(clientId);
+var authorization = await authorizationService.AuthorizeAsync(user, resource,
+    [new PermissionRequirement("disbursements.search-by-client")]);
+if (!authorization.Succeeded) return Results.Forbid();
+
+var history = await repository.GetByClientIdAsync(clientId, cancellationToken);
+return Results.Ok(history);
+```
+
+Zarejestruj również polityki endpointów z `PermissionPresenceRequirement` jako wstępne sprawdzenie oraz `UseAuthentication()` przed `UseAuthorization()`. Kontrolę konkretnego zasobu wykonuj zawsze w handlerze. Wyszukiwanie po wymaganym `clientId` dostępne tylko dla serwisu B nie potrzebuje zakresu odczytu z Loans; gdyby lista miała być dostępna pracownikom z ograniczeniami danych, czytnik musi nałożyć te ograniczenia przed paginacją.
+
+Przed uruchomieniem sprawdź cztery przypadki: A może tylko zlecić, B może tylko wyszukiwać, pracownik z rolą może pobierać i ponawiać, a pracownik bez roli i klient dostają `403`. Przy współdzielonym `Authorization` pamiętaj, że `Services:disbursements` izoluje granty, lecz `RoleMappings` i `ActorRoles` są wspólne i walidowane w każdym serwisie. Jeśli zestawy aktorów się różnią, użyj osobnej sekcji konfiguracji przekazanej do `AddCreditAuthroization(..., configurationSection: "DisbursementAuthorization")`.
 
 `ConfigurableAuthorization.Tests` odwołuje się wyłącznie do biblioteki i testuje osobny przykład dokumentów: własne typy aktorów, claimy, uprawnienia, zakres zespołu i klasyfikację dokumentów.
 

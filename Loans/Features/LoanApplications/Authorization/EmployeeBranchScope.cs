@@ -28,20 +28,26 @@ internal sealed class EmployeeBranchScope(IEnumerable<IEmployeeBranchResolver> r
     {
         if (resource.Channel != LoanChannels.Branch || resource.BranchId is null) return false;
 
+        return await ResolveBranchAsync(user, cancellationToken) is { } branchId
+            && resource.BranchId == branchId;
+    }
+
+    internal async ValueTask<Guid?> ResolveBranchAsync(ClaimsPrincipal user, CancellationToken cancellationToken)
+    {
         var branchClaims = IdentityClaims.Find(user, ApiSecurity.BranchIdClaim).ToArray();
         if (branchClaims.Length > 0)
-            return IdentityClaims.ReadGuid(user, ApiSecurity.BranchIdClaim) == resource.BranchId;
+            return IdentityClaims.ReadGuid(user, ApiSecurity.BranchIdClaim);
 
         if (!CanEvaluate(user) || ReadEmployeeId(user) is not { } employeeId)
-            return false;
+            return null;
 
         if (!branchCache.TryGetValue(employeeId, out var branchId))
         {
             var resolver = resolvers.SingleOrDefault();
-            if (resolver is null) return false;
+            if (resolver is null) return null;
             branchId = await resolver.ResolveAsync(employeeId, cancellationToken) ?? Guid.Empty;
             branchCache.TryAdd(employeeId, branchId);
         }
-        return branchId != Guid.Empty && branchId == resource.BranchId;
+        return branchId == Guid.Empty ? null : branchId;
     }
 }

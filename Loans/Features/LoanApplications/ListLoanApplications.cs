@@ -2,14 +2,14 @@ using System.Security.Claims;
 using ConfigurableAuthorization;
 using Loans.Features.LoanApplications.Authorization;
 using Microsoft.AspNetCore.Authorization;
-using Microsoft.EntityFrameworkCore;
 
 namespace Loans.Features.LoanApplications;
 
-public sealed record ListLoanApplicationsQuery(int Skip = 0, int Take = 20);
+public sealed record ListLoanApplicationsQuery(int Skip = 0, int Take = 20, Guid? ClientId = null,
+    string? Product = null, Guid? BranchId = null, string? Channel = null);
 
-internal sealed class ListLoanApplications(LoansDbContext dbContext, IAuthorizationService authorizationService,
-    ResourceAuthorization<LoanGrantOptions> resourceAuthorization)
+internal sealed class ListLoanApplications(LoanApplicationReader reader, IAuthorizationService authorizationService,
+    LoanQueryAuthorization queryAuthorization)
 {
     public async Task<LoanApplicationResult<LoanApplication[]>> HandleAsync(
         ClaimsPrincipal user, ListLoanApplicationsQuery query, CancellationToken cancellationToken)
@@ -24,13 +24,13 @@ internal sealed class ListLoanApplications(LoansDbContext dbContext, IAuthorizat
                 ["pagination"] = ["Skip must be non-negative and take must be between 1 and 100."]
             });
 
-        var candidates = await dbContext.LoanApplications.AsNoTracking()
-            .OrderByDescending(item => item.CreatedAt).ThenBy(item => item.Id)
-            .ToArrayAsync(cancellationToken);
-        var visible = await resourceAuthorization.FilterAsync(user, candidates,
-            loan => LoanApplicationResource.From(loan), LoanPermissions.Read, cancellationToken);
-        // Page the authorized collection, never the unfiltered database result.
-        return new LoanSuccess<LoanApplication[]>(
-            visible.Skip(query.Skip).Take(query.Take).Select(application => application.ToModel()).ToArray());
+        if (query.Product is { } product && !LoanProducts.IsValidCode(product))
+            return new LoanInvalid(new() { ["product"] = ["Invalid product code."] });
+        if (query.Channel is { } channel && !LoanChannels.IsValid(channel))
+            return new LoanInvalid(new() { ["channel"] = ["Invalid channel."] });
+
+        var authorized = await queryAuthorization.AuthorizeAsync(user, query, cancellationToken);
+        if (authorized is null) return new LoanForbidden();
+        return new LoanSuccess<LoanApplication[]>(await reader.SearchAsync(authorized, cancellationToken));
     }
 }

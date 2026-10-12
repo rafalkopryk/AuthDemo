@@ -6,6 +6,10 @@ internal static class LoanAuthorizationRegistration
 {
     internal static void AddLoanAuthorization(this IServiceCollection services)
     {
+        services.AddScoped<LoanQueryAuthorization>();
+        services.AddScoped<ILoanReadScope, AllLoanReadScope>();
+        services.AddScoped<ILoanReadScope, OwnLoanReadScope>();
+        services.AddScoped<ILoanReadScope, BranchLoanReadScope>();
         services.AddCreditAuthroization<LoanGrantOptions>(options =>
         {
             options.Service("loans");
