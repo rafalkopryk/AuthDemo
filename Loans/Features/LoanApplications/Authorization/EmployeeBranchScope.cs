@@ -5,7 +5,7 @@ using ConfigurableAuthorization;
 namespace Loans.Features.LoanApplications.Authorization;
 
 internal sealed class EmployeeBranchScope(IEnumerable<IEmployeeBranchResolver> resolvers)
-    : IResourceScope<LoanApplicationResource>
+    : IResourceAccessScope<LoanAccess>
 {
     private const string EmployeeIdClaim = "employee_id";
     private readonly ConcurrentDictionary<string, Guid> branchCache = new(StringComparer.Ordinal);
@@ -23,16 +23,11 @@ internal sealed class EmployeeBranchScope(IEnumerable<IEmployeeBranchResolver> r
                && ReadEmployeeId(user) is not null;
     }
 
-    public async ValueTask<bool> AllowsAsync(ClaimsPrincipal user, LoanApplicationResource resource,
-        CancellationToken cancellationToken)
-    {
-        if (resource.Channel != LoanChannels.Branch || resource.BranchId is null) return false;
+    public async ValueTask<LoanAccess?> ResolveAsync(ClaimsPrincipal user, CancellationToken cancellationToken) =>
+        await ResolveBranchAsync(user, cancellationToken) is { } branchId
+            ? new(BranchId: branchId, Channels: [LoanChannels.Branch]) : null;
 
-        return await ResolveBranchAsync(user, cancellationToken) is { } branchId
-            && resource.BranchId == branchId;
-    }
-
-    internal async ValueTask<Guid?> ResolveBranchAsync(ClaimsPrincipal user, CancellationToken cancellationToken)
+    private async ValueTask<Guid?> ResolveBranchAsync(ClaimsPrincipal user, CancellationToken cancellationToken)
     {
         var branchClaims = IdentityClaims.Find(user, ApiSecurity.BranchIdClaim).ToArray();
         if (branchClaims.Length > 0)

@@ -7,9 +7,6 @@ internal static class LoanAuthorizationRegistration
     internal static void AddLoanAuthorization(this IServiceCollection services)
     {
         services.AddScoped<LoanQueryAuthorization>();
-        services.AddScoped<ILoanReadScope, AllLoanReadScope>();
-        services.AddScoped<ILoanReadScope, OwnLoanReadScope>();
-        services.AddScoped<ILoanReadScope, BranchLoanReadScope>();
         services.AddCreditAuthroization<LoanGrantOptions>(options =>
         {
             options.Service("loans");
@@ -22,11 +19,13 @@ internal static class LoanAuthorizationRegistration
 
             options.Resource<LoanApplicationResource>()
                 .Permissions(LoanPermissions.Read, LoanPermissions.Create, LoanPermissions.Edit, LoanPermissions.Submit)
-                .AllowAll()
-                .Own(resource => resource.ClientId, ApiSecurity.ClientIdClaim)
+                .Access<LoanAccess>()
+                .Scope("All", _ => new())
+                .Scope("Own", user => IdentityClaims.ReadGuid(user, ApiSecurity.ClientIdClaim) is { } id
+                    ? new(ClientId: id) : null,
+                    eligible: user => IdentityClaims.ReadGuid(user, ApiSecurity.ClientIdClaim) is not null)
                 .Scope<EmployeeBranchScope>("OwnBranch", EmployeeBranchScope.CanEvaluate)
-                .Require((user, grant, resource) =>
-                    LoanGrantConditions.Allows(user, grant, resource.Product, resource.Channel));
+                .Constrain(LoanGrantConditions.Constrain);
         });
     }
 }

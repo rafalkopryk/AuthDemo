@@ -64,10 +64,25 @@ internal sealed class ResourcePermissionHandler<TGrant>(IAccessResolver<Resource
     }
 }
 
-/// <summary>Optional filtering of an already loaded collection; no database dependency.</summary>
+/// <summary>Resolves typed access for queries or filters already loaded items; no database dependency.</summary>
 public sealed class ResourceAuthorization<TGrant>(IAccessResolver<ResourceGrant<TGrant>> resolver,
     ResourceAuthorizationBuilder<TGrant> definition, IServiceProvider services) where TGrant : PermissionGrantOptions
 {
+    /// <summary>Returns complete alternative grants. Apply AND within each access and OR between alternatives.</summary>
+    public async Task<IReadOnlyList<TAccess>> ResolveAccessAsync<TResource, TAccess>(ClaimsPrincipal user,
+        string permission, CancellationToken cancellationToken = default)
+        where TResource : class where TAccess : class, IResourceAccess<TResource>
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!definition.Resources.TryGetValue(typeof(TResource), out var registration)
+            || registration.AccessType != typeof(TAccess))
+            throw new InvalidOperationException($"Resource '{typeof(TResource).Name}' must be registered with Access<{typeof(TAccess).Name}>().");
+        var grants = await resolver.ResolveAsync(user, permission);
+        cancellationToken.ThrowIfCancellationRequested();
+        var alternatives = await registration.ResolveAlternativesAsync(permission, grants, services, cancellationToken);
+        return Array.AsReadOnly(alternatives.Cast<TAccess>().ToArray());
+    }
+
     public Task<TResource[]> FilterAsync<TResource>(ClaimsPrincipal user, IEnumerable<TResource> resources,
         string permission, CancellationToken cancellationToken = default) where TResource : class =>
         FilterAsync(user, resources, resource => resource, permission, cancellationToken);
@@ -80,12 +95,23 @@ public sealed class ResourceAuthorization<TGrant>(IAccessResolver<ResourceGrant<
         cancellationToken.ThrowIfCancellationRequested();
         var grants = await resolver.ResolveAsync(user, permission);
         var result = new List<TItem>();
+        var resolvedAccess = new Dictionary<Type, IReadOnlyList<object>>();
         foreach (var item in items)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var resource = resourceSelector(item);
             if (resource is null || !definition.Resources.TryGetValue(resource.GetType(), out var registration))
                 continue;
+            if (registration.AccessType is not null)
+            {
+                if (!resolvedAccess.TryGetValue(resource.GetType(), out var alternatives))
+                {
+                    alternatives = await registration.ResolveAlternativesAsync(permission, grants, services, cancellationToken);
+                    resolvedAccess.Add(resource.GetType(), alternatives);
+                }
+                if (alternatives.Any(access => registration.AccessAllows!(access, resource))) result.Add(item);
+                continue;
+            }
             foreach (var grant in grants)
                 if (await registration.AllowsAsync(permission, resource, grant, services, cancellationToken))
                 {

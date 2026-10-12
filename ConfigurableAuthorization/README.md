@@ -112,7 +112,34 @@ var visible = await resourceAuthorization.FilterAsync(
     user, documents, "documents.read", cancellationToken);
 ```
 
-Dla własnych opcji wstrzyknij `ResourceAuthorization<MyGrantOptions>`. Helper wyznacza granty raz, a potem używa tych samych reguł co `AuthorizeAsync`. Działa na załadowanych obiektach, bez tłumaczenia na SQL. Nie rozwiązuje stronicowania ani liczenia rekordów w bazie. Aktualna lista Loans korzysta z osobnego `LoanQueryAuthorization` w serwisie Loans i przekłada jego zakres odczytu na zapytanie do bazy przed `Skip`/`Take`. Ten mechanizm nie jest częścią API paczki; własny serwis musi sam zastosować ograniczenia w swojej warstwie odczytu.
+Dla własnych opcji wstrzyknij `ResourceAuthorization<MyGrantOptions>`. Helper wyznacza granty raz, a potem używa tych samych reguł co `AuthorizeAsync`. Działa na załadowanych obiektach, bez tłumaczenia na SQL. Nie rozwiązuje stronicowania ani liczenia rekordów w bazie. Dla list z paginacją Loans korzysta z `ResolveAccessAsync` i przekłada te same ograniczenia, które sprawdzają pojedynczy zasób, na zapytanie do bazy przed `Skip`/`Take`. Własny serwis musi zastosować ograniczenia w swojej warstwie odczytu.
+
+## Wspólne ograniczenia dla zasobu i zapytania
+
+Gdy serwis ma listę z filtrowaniem w bazie, zarejestruj zasób przez `.Access<TAccess>()`. Typ `TAccess` implementuje `IResourceAccess<TResource>.Allows(resource)`. Zakresy zwracają taki dostęp na podstawie użytkownika, bez pobierania konkretnego rekordu. `null` oznacza odmowę. W tym trybie `.Constrain((user, grant, access) => ...)` zawęża dostęp o konfigurację grantu i claimy użytkownika; zwrócone `null` wyłącza grant.
+
+```csharp
+public sealed record DocumentAccess(Guid? OwnerId = null) : IResourceAccess<DocumentResource>
+{
+    public bool Allows(DocumentResource resource) => OwnerId is null || resource.OwnerId == OwnerId;
+}
+
+options.Resource<DocumentResource>()
+    .Permissions("documents.read")
+    .Access<DocumentAccess>()
+    .Scope("All", _ => new())
+    .Scope("Own", user => IdentityClaims.ReadGuid(user, "client_id") is { } id
+        ? new(OwnerId: id) : null);
+```
+
+Zakres korzystający z zewnętrznego źródła może implementować `IResourceAccessScope<DocumentAccess>` i być zarejestrowany przez `.Scope<MyScope>("Team")`. Paczka dodaje tę klasę do DI jako scoped. Opcjonalne `eligible` może odrzucić grant już podczas wstępnego sprawdzenia uprawnienia. `.Access<TAccess>()` jest alternatywą dla `.Own(...)`, `.Scope(...)` zwracających `bool` i `.Require(...)` na tym samym zasobie.
+
+```csharp
+var alternatives = await resourceAuthorization
+    .ResolveAccessAsync<DocumentResource, DocumentAccess>(user, "documents.read", cancellationToken);
+```
+
+Wynik zawiera kompletne alternatywy: warunki jednej alternatywy łączą się przez AND, a alternatywy przez OR. Pusta lista oznacza odmowę. `AuthorizeAsync` dla zasobu i `FilterAsync` używają tych samych ograniczeń. `ResolveAccessAsync` wymaga zasobu zarejestrowanego przez `.Access<TAccess>()`; dla innego typu zgłasza błąd użycia API. Paczka nie tłumaczy ograniczeń na SQL. Aplikacja musi zastosować każde pole dostępu w czytniku przed paginacją. Przykład: `Loans/Features/LoanApplications/Authorization/LoanAccess.cs` oraz `LoanApplicationReader.cs`.
 
 ## Dedykowany model zasobu
 

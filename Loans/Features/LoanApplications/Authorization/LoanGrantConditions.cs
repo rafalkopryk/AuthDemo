@@ -3,7 +3,7 @@ using ConfigurableAuthorization;
 
 namespace Loans.Features.LoanApplications.Authorization;
 
-// Domain constraints only. Owner and branch access are enforced by the package's resource scopes.
+// Grant and identity constraints shared by resource authorization and queries.
 internal static class LoanGrantConditions
 {
     internal static IEnumerable<string> Validate(LoanGrantOptions grant)
@@ -24,24 +24,23 @@ internal static class LoanGrantConditions
             && (grant.Scope != "OwnBranch" || Allows(grant.Channels, channels, LoanChannels.Branch));
     }
 
-    internal static LoanReadRestriction Restrictions(ClaimsPrincipal user, LoanGrantOptions grant) => new(
-        Products: Intersect(grant.Products, ClaimRestriction(user, ApiSecurity.AllowedProductClaim)),
-        Channels: Intersect(grant.Channels, ClaimRestriction(user, ApiSecurity.AllowedChannelClaim)));
-
-    internal static bool Allows(ClaimsPrincipal user, LoanGrantOptions grant, string? product, string? channel)
+    internal static LoanAccess? Constrain(ClaimsPrincipal user, LoanGrantOptions grant, LoanAccess access)
     {
-        var restriction = Restrictions(user, grant);
-        return Contains(restriction.Products, product) && Contains(restriction.Channels, channel);
+        var result = access with
+        {
+            Products = Intersect(access.Products,
+                Intersect(grant.Products, ClaimRestriction(user, ApiSecurity.AllowedProductClaim))),
+            Channels = Intersect(access.Channels,
+                Intersect(grant.Channels, ClaimRestriction(user, ApiSecurity.AllowedChannelClaim)))
+        };
+        return result.Products is { Length: 0 } || result.Channels is { Length: 0 } ? null : result;
     }
 
-    internal static string[]? Intersect(string[]? left, string[]? right) =>
+    private static string[]? Intersect(string[]? left, string[]? right) =>
         left is null ? right : right is null ? left : left.Intersect(right, StringComparer.Ordinal).ToArray();
 
     private static string[]? ClaimRestriction(ClaimsPrincipal user, string type) =>
         Values(user, type) is { Length: > 0 } values ? values : null;
-
-    private static bool Contains(string[]? allowed, string? value) =>
-        allowed is null || (value is not null && allowed.Contains(value, StringComparer.Ordinal));
 
     private static string[] Values(ClaimsPrincipal user, string type) =>
         IdentityClaims.Find(user, type).Select(c => c.Value).Distinct(StringComparer.Ordinal).ToArray();

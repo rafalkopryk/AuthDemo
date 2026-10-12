@@ -5,6 +5,9 @@ using ConfigurableAuthorization;
 using Loans.Features.LoanApplications;
 using Loans.Features.LoanApplications.Authorization;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace Loans.Tests;
@@ -84,46 +87,100 @@ public sealed class LoanQueryAuthorizationTests
 {
     private static readonly ClaimsPrincipal User = new(new ClaimsIdentity([], "test"));
 
-    [Fact]
-    public async Task Missing_read_scope_does_not_grant_access()
+    [Theory]
+    [InlineData("All")]
+    [InlineData("Own")]
+    [InlineData("OwnBranch")]
+    public async Task Query_resource_and_collection_authorization_agree(string scopeName)
     {
-        var service = new LoanQueryAuthorization(new Grants(new() { Scope = "Custom" }), [new AllLoanReadScope()]);
-        Assert.Null(await service.AuthorizeAsync(User, new(), default));
+        using var provider = Provider(scopeName);
+        using var scope = provider.CreateScope();
+        var services = scope.ServiceProvider;
+        var client = Guid.NewGuid();
+        var branch = Guid.NewGuid();
+        var user = new ClaimsPrincipal(new ClaimsIdentity([
+            new Claim(ApiSecurity.ClientIdClaim, client.ToString()),
+            new Claim(ApiSecurity.BranchIdClaim, branch.ToString()),
+            new Claim(ApiSecurity.AllowedProductClaim, "retail-loan")], "test"));
+        var queryAuthorization = services.GetRequiredService<LoanQueryAuthorization>();
+        var query = await queryAuthorization.AuthorizeAsync(user, new(), default);
+        Assert.NotNull(query);
+        using var db = new LoansDbContext(new DbContextOptionsBuilder<LoansDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
+        var loans = (from owner in new[] { client, Guid.NewGuid() }
+                     from office in new Guid?[] { branch, Guid.NewGuid(), null }
+                     from channel in new[] { "branch", "digital", "store", null }
+                     from product in new[] { "retail-loan", "business-loan", null }
+                     select new LoanApplicationEntity
+                     {
+                         Id = Guid.NewGuid(), ClientId = owner, BranchId = office,
+                         Channel = channel, Product = product, ApplicantName = "Test",
+                         CreatedAt = DateTimeOffset.UtcNow
+                     }).ToArray();
+        db.AddRange(loans);
+        await db.SaveChangesAsync();
+        var expected = new List<Guid>();
+        var authorization = services.GetRequiredService<IAuthorizationService>();
+        foreach (var loan in loans)
+            if ((await authorization.AuthorizeAsync(user, LoanApplicationResource.From(loan),
+                    [new PermissionRequirement(LoanPermissions.Read)])).Succeeded)
+                expected.Add(loan.Id);
+        var filtered = await services.GetRequiredService<ResourceAuthorization<LoanGrantOptions>>()
+            .FilterAsync(user, loans, LoanApplicationResource.From, LoanPermissions.Read);
+        var results = await new LoanApplicationReader(db).SearchAsync(query with { Filters = new(Take: 100) }, default);
+        Assert.NotEmpty(expected);
+        Assert.Equal(expected.Order(), filtered.Select(l => l.Id).Order());
+        Assert.Equal(expected.Order(), results.Select(l => l.Id).Order());
+        Assert.Null(await queryAuthorization.AuthorizeAsync(user, new(Product: "business-loan"), default));
+        if (scopeName == "Own")
+            Assert.Null(await queryAuthorization.AuthorizeAsync(user, new(ClientId: Guid.NewGuid()), default));
+        if (scopeName == "OwnBranch")
+            Assert.Null(await queryAuthorization.AuthorizeAsync(user, new(Channel: "digital"), default));
+    }
+
+    [Theory]
+    [InlineData("Own")]
+    [InlineData("OwnBranch")]
+    public async Task Unresolved_identity_denies_queries(string scopeName)
+    {
+        using var provider = Provider(scopeName);
+        using var scope = provider.CreateScope();
+        Assert.Null(await scope.ServiceProvider.GetRequiredService<LoanQueryAuthorization>()
+            .AuthorizeAsync(User, new(), default));
     }
 
     [Fact]
-    public async Task Custom_read_scope_is_resolved_and_intersected_with_grant_and_claims()
+    public async Task Employee_branch_scope_resolves_once_and_rejects_invalid_branch_claim()
     {
-        var user = new ClaimsPrincipal(new ClaimsIdentity([new Claim(ApiSecurity.AllowedProductClaim, "retail-loan")], "test"));
-        var service = new LoanQueryAuthorization(new Grants(new()
-        {
-            Scope = "Custom", Products = ["retail-loan", "business-loan"]
-        }), [new CustomReadScope()]);
-        var authorized = await service.AuthorizeAsync(user, new(), default);
-        var access = Assert.Single(authorized!.Alternatives);
-        Assert.Equal(new[] { "retail-loan" }, access.Products);
-        Assert.Equal(new[] { "store" }, access.Channels);
-        Assert.Null(await service.AuthorizeAsync(user, new(Product: "business-loan"), default));
-        Assert.Null(await service.AuthorizeAsync(user, new(Channel: "digital"), default));
-    }
+        var branch = Guid.NewGuid();
+        var resolver = new TestBranchResolver(branch);
+        var scope = new EmployeeBranchScope([resolver]);
+        var user = new ClaimsPrincipal(new ClaimsIdentity([
+            new Claim(ApiSecurity.TokenTypeClaim, "employee"), new Claim("employee_id", "x123")], "test"));
+        Assert.True(EmployeeBranchScope.CanEvaluate(user));
+        var access = await scope.ResolveAsync(user, default);
+        Assert.Equal(branch, access!.BranchId);
+        Assert.Equal(new[] { LoanChannels.Branch }, access.Channels);
+        Assert.True(access.Allows(new LoanApplicationResource(Guid.NewGuid(), branch, null, LoanChannels.Branch)));
+        Assert.False(access.Allows(new LoanApplicationResource(Guid.NewGuid(), branch, null, LoanChannels.Digital)));
+        Assert.False(access.Allows(new LoanApplicationResource(Guid.NewGuid(), Guid.NewGuid(), null, LoanChannels.Branch)));
+        await scope.ResolveAsync(user, default);
+        Assert.Equal(1, resolver.Calls);
 
-    [Fact]
-    public async Task Empty_restrictions_and_unresolved_owner_deny_access()
-    {
-        var empty = new LoanQueryAuthorization(new Grants(new() { Scope = "All", Products = [] }), [new AllLoanReadScope()]);
-        Assert.Null(await empty.AuthorizeAsync(User, new(), default));
-        var own = new LoanQueryAuthorization(new Grants(new() { Scope = "Own" }), [new OwnLoanReadScope()]);
-        Assert.Null(await own.AuthorizeAsync(User, new(), default));
-        var branch = new LoanQueryAuthorization(new Grants(new() { Scope = "OwnBranch" }),
-            [new BranchLoanReadScope(new EmployeeBranchScope([]))]);
-        Assert.Null(await branch.AuthorizeAsync(User, new(), default));
+        var invalid = new ClaimsPrincipal(new ClaimsIdentity(user.Claims.Append(
+            new Claim(ApiSecurity.BranchIdClaim, "invalid")), "test"));
+        Assert.False(EmployeeBranchScope.CanEvaluate(invalid));
+        Assert.Null(await scope.ResolveAsync(invalid, default));
+        Assert.Equal(1, resolver.Calls);
     }
 
     [Fact]
     public async Task Cancellation_is_propagated()
     {
-        var service = new LoanQueryAuthorization(new Grants(new() { Scope = "All" }), [new AllLoanReadScope()]);
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => service.AuthorizeAsync(User, new(), new(true)));
+        using var provider = Provider("All");
+        using var scope = provider.CreateScope();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            scope.ServiceProvider.GetRequiredService<LoanQueryAuthorization>().AuthorizeAsync(User, new(), new(true)));
     }
 
     [Fact]
@@ -177,7 +234,7 @@ public sealed class LoanQueryAuthorizationTests
         await db.SaveChangesAsync();
         db.ChangeTracker.Clear();
         var reader = new LoanApplicationReader(db);
-        LoanReadRestriction[] alternatives =
+        LoanAccess[] alternatives =
         [
             new(Products: ["retail-loan"], Channels: ["store"]),
             new(BranchId: branch, Products: ["business-loan"], Channels: ["branch"])
@@ -202,16 +259,29 @@ public sealed class LoanQueryAuthorizationTests
         }
     }
 
-    private sealed class CustomReadScope : ILoanReadScope
+    private static ServiceProvider Provider(string scope)
     {
-        public string Name => "Custom";
-        public ValueTask<LoanReadRestriction?> ResolveAsync(ClaimsPrincipal user, CancellationToken cancellationToken) =>
-            ValueTask.FromResult<LoanReadRestriction?>(new(Channels: ["store"]));
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<IConfiguration>(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Authorization:ActorRoles:client:0"] = "reader",
+            ["Authorization:Roles:reader:Services:loans:Grants:0:Permissions:0"] = LoanPermissions.Read,
+            ["Authorization:Roles:reader:Services:loans:Grants:0:Scope"] = scope,
+            ["Authorization:Roles:reader:Services:loans:Grants:0:Products:0"] = "retail-loan",
+            ["Authorization:Roles:reader:Services:loans:Grants:0:Products:1"] = "business-loan"
+        }).Build());
+        services.AddLoanAuthorization();
+        return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true, ValidateOnBuild = true });
     }
 
-    private sealed class Grants(LoanGrantOptions options) : IAccessResolver<ResourceGrant<LoanGrantOptions>>
+    private sealed class TestBranchResolver(Guid branch) : IEmployeeBranchResolver
     {
-        public Task<IReadOnlyList<ResourceGrant<LoanGrantOptions>>> ResolveAsync(ClaimsPrincipal user, string permission) =>
-            Task.FromResult<IReadOnlyList<ResourceGrant<LoanGrantOptions>>>([new(user, options)]);
+        public int Calls { get; private set; }
+        public Task<Guid?> ResolveAsync(string employeeId, CancellationToken cancellationToken)
+        {
+            Calls++;
+            return Task.FromResult<Guid?>(employeeId == "x123" ? branch : null);
+        }
     }
 }

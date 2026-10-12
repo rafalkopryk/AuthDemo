@@ -52,6 +52,17 @@ public sealed class ResourceBuilder<TResource, TGrant> where TResource : class w
 
     public ResourceBuilder<TResource, TGrant> AllowAll() => Scope("All", (_, _) => true);
 
+    /// <summary>Uses the same typed constraints for resource checks and query authorization.</summary>
+    public ResourceAccessBuilder<TResource, TGrant, TAccess> Access<TAccess>()
+        where TAccess : class, IResourceAccess<TResource>
+    {
+        if (registration.AccessType is not null || registration.Scopes.Count > 0 || registration.Conditions.Count > 0)
+            throw new InvalidOperationException("Choose either resource predicates or typed access for a resource.");
+        registration.AccessType = typeof(TAccess);
+        registration.AccessAllows = (access, resource) => ((TAccess)access).Allows((TResource)resource);
+        return new(registration);
+    }
+
     public ResourceBuilder<TResource, TGrant> Own(Func<TResource, Guid?> owner, string claim,
         Func<TResource, bool>? when = null) => MatchClaim("Own", owner, claim, when);
 
@@ -71,6 +82,7 @@ public sealed class ResourceBuilder<TResource, TGrant> where TResource : class w
     public ResourceBuilder<TResource, TGrant> Scope(string name, Func<ClaimsPrincipal, TResource, bool> allows,
         Func<ClaimsPrincipal, bool>? eligible = null)
     {
+        registration.EnsureDirectScopes();
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         if (!registration.Scopes.TryAdd(name, new(eligible ?? (_ => true),
             (_, user, resource, _) => ValueTask.FromResult(allows(user, (TResource)resource)))))
@@ -83,6 +95,7 @@ public sealed class ResourceBuilder<TResource, TGrant> where TResource : class w
         Func<ClaimsPrincipal, bool>? eligible = null)
         where TScope : class, IResourceScope<TResource>
     {
+        registration.EnsureDirectScopes();
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         if (!registration.Scopes.TryAdd(name, new(eligible ?? (_ => true),
             (services, user, resource, cancellationToken) =>
@@ -95,6 +108,7 @@ public sealed class ResourceBuilder<TResource, TGrant> where TResource : class w
     /// <summary>All conditions must hold within the same grant as its scope.</summary>
     public ResourceBuilder<TResource, TGrant> Require(Func<ClaimsPrincipal, TGrant, TResource, bool> condition)
     {
+        registration.EnsureDirectScopes();
         registration.Conditions.Add((user, grant, resource) => condition(user, grant, (TResource)resource));
         return this;
     }
@@ -105,17 +119,59 @@ internal sealed class ResourceRegistration<TGrant> where TGrant : PermissionGran
     internal HashSet<string> Permissions { get; } = new(StringComparer.Ordinal);
     internal Dictionary<string, ResourceScope> Scopes { get; } = new(StringComparer.Ordinal);
     internal List<Func<ClaimsPrincipal, TGrant, object, bool>> Conditions { get; } = [];
+    internal Type? AccessType { get; set; }
+    internal Func<object, object, bool>? AccessAllows { get; set; }
+    internal List<Func<ClaimsPrincipal, TGrant, object, object?>> Constraints { get; } = [];
+
+    internal void EnsureDirectScopes()
+    {
+        if (AccessType is not null)
+            throw new InvalidOperationException("Typed access cannot be combined with resource predicates or Require. Use Constrain instead.");
+    }
+
+    internal async ValueTask<object?> ResolveAccessAsync(string permission, ResourceGrant<TGrant> grant,
+        IServiceProvider services, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!Permissions.Contains(permission) || !Scopes.TryGetValue(grant.Options.Scope, out var scope)
+            || !scope.Eligible(grant.User)) return null;
+        var access = await scope.ResolveAccessAsync!(services, grant.User, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        foreach (var constrain in Constraints)
+        {
+            if (access is null) break;
+            access = constrain(grant.User, grant.Options, access);
+        }
+        return access;
+    }
+
+    internal async Task<IReadOnlyList<object>> ResolveAlternativesAsync(string permission,
+        IReadOnlyList<ResourceGrant<TGrant>> grants, IServiceProvider services, CancellationToken cancellationToken)
+    {
+        var alternatives = new List<object>();
+        foreach (var grant in grants)
+            if (await ResolveAccessAsync(permission, grant, services, cancellationToken) is { } access)
+                alternatives.Add(access);
+        return alternatives.AsReadOnly();
+    }
 
     internal async ValueTask<bool> AllowsAsync(string permission, object resource, ResourceGrant<TGrant> grant,
-        IServiceProvider services, CancellationToken cancellationToken) =>
-        Permissions.Contains(permission)
-        && Scopes.TryGetValue(grant.Options.Scope, out var scope)
-        && scope.Eligible(grant.User)
-        && Conditions.All(condition => condition(grant.User, grant.Options, resource))
-        && await scope.AllowsAsync(services, grant.User, resource, cancellationToken);
+        IServiceProvider services, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (AccessType is not null)
+            return await ResolveAccessAsync(permission, grant, services, cancellationToken) is { } access
+                && AccessAllows!(access, resource);
+        return Permissions.Contains(permission)
+            && Scopes.TryGetValue(grant.Options.Scope, out var scope)
+            && scope.Eligible(grant.User)
+            && Conditions.All(condition => condition(grant.User, grant.Options, resource))
+            && await scope.AllowsAsync!(services, grant.User, resource, cancellationToken);
+    }
 }
 
 internal sealed record ResourceScope(
     Func<ClaimsPrincipal, bool> Eligible,
-    Func<IServiceProvider, ClaimsPrincipal, object, CancellationToken, ValueTask<bool>> AllowsAsync,
-    Type? ServiceType = null);
+    Func<IServiceProvider, ClaimsPrincipal, object, CancellationToken, ValueTask<bool>>? AllowsAsync,
+    Type? ServiceType = null,
+    Func<IServiceProvider, ClaimsPrincipal, CancellationToken, ValueTask<object?>>? ResolveAccessAsync = null);

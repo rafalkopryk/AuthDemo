@@ -160,7 +160,7 @@ Endpointy wstrzykują klasy operacji i mapują wynik na HTTP. `Get`, `Update` i 
 
 `Create` wymaga jawnego kanału (oraz `branchId` dla kanału `branch`), waliduje żądanie i autoryzuje `LoanApplicationResource.From(request)` bez przygotowywania wartości domyślnych. Zakresy są zadeklarowane raz w `LoanAuthorizationRegistration`; produkty i kanały sprawdza `LoanGrantConditions`.
 
-Polityki endpointów używają `PermissionPresenceRequirement` jako wstępnego sprawdzenia operacji (`403` przy braku nadania). Nie zastępuje ono autoryzacji konkretnego zasobu. `PermissionRequirement` z pustym lub niezarejestrowanym zasobem odmawia dostępu. Lista korzysta z `LoanQueryAuthorization`, który wyznacza dozwolony zakres z tych samych grantów. `LoanApplicationReader` nakłada ograniczenia oraz filtry użytkownika w bazie przed `Skip`/`Take`; nie pobiera całej kolekcji do autoryzacji w pamięci.
+Polityki endpointów używają `PermissionPresenceRequirement` jako wstępnego sprawdzenia operacji (`403` przy braku nadania). Nie zastępuje ono autoryzacji konkretnego zasobu. `PermissionRequirement` z pustym lub niezarejestrowanym zasobem odmawia dostępu. Lista korzysta z `LoanQueryAuthorization`, który pobiera z biblioteki te same ograniczenia `LoanAccess`, których używa autoryzacja pojedynczego zasobu. `LoanApplicationReader` nakłada ograniczenia oraz filtry użytkownika w bazie przed `Skip`/`Take`; nie pobiera całej kolekcji do autoryzacji w pamięci.
 
 Mechanizm korzysta z [autoryzacji zasobów ASP.NET Core](https://learn.microsoft.com/en-us/aspnet/core/security/authorization/resource-based?view=aspnetcore-10.0).
 
@@ -227,7 +227,7 @@ Nowe role i nowe kombinacje istniejących uprawnień, produktów, kanałów i za
 
 `ConfigurableAuthorization` jest osobnym projektem ASP.NET Core, niezależnym od modeli biznesowych, Entity Framework i sposobu walidowania JWT. Zawiera mapowanie claimów, konfigurację i jej walidację, rozwiązywanie uprawnień oraz `AuthorizationHandler`. Instrukcja użycia i punkty rozszerzeń są w [ConfigurableAuthorization/README.md](ConfigurableAuthorization/README.md).
 
-`Loans` deklaruje dedykowany `LoanApplicationResource` w `LoanAuthorizationRegistration`, korzystając z gotowego zakresu `Own` oraz własnej implementacji `OwnBranch` przez DI. `LoanGrantOptions` opisuje konfigurację domenową, a `LoanGrantConditions` sprawdza produkty i kanały. Konfiguracja ról ma teraz strukturę `Roles → nazwa roli → Services → loans → Grants`; wspólne mapowania mogą być używane przez kilka serwisów. Paczka dostarcza też prosty helper `ResourceAuthorization<TGrant>.FilterAsync` dla załadowanych kolekcji.
+`Loans` deklaruje dedykowany `LoanApplicationResource` w `LoanAuthorizationRegistration`, rejestrując `LoanAccess` dla zakresów `All`, `Own` i `OwnBranch`. Ten sam dostęp sprawdza pojedynczy zasób i ogranicza listę. `LoanGrantOptions` opisuje konfigurację domenową, a `LoanGrantConditions` zawęża dostęp według produktów i kanałów. Konfiguracja ról ma teraz strukturę `Roles → nazwa roli → Services → loans → Grants`; wspólne mapowania mogą być używane przez kilka serwisów. Paczka dostarcza też prosty helper `ResourceAuthorization<TGrant>.FilterAsync` dla załadowanych kolekcji.
 
 ### Wyszukiwanie w dozwolonym zakresie
 
@@ -235,21 +235,23 @@ Nowe role i nowe kombinacje istniejących uprawnień, produktów, kanałów i za
 
 Wszystkie filtry są opcjonalne. Brak `clientId` oznacza wyszukiwanie w dozwolonym zakresie (np. własne wnioski klienta). Jawny filtr lub kombinacja filtrów sprzeczna ze wszystkimi dostępnymi grantami daje **403**. Parametry nie są nadpisywane. Dozwolone wyszukiwanie bez pasujących rekordów daje **200** i pustą listę; niepoprawny format parametru daje **400**. Użytkownik z dostępem oddziałowym może podać dowolny `clientId`, ale otrzyma wyłącznie jego wnioski w swoim oddziale.
 
-`LoanQueryAuthorization.AuthorizeAsync(user, query, cancellationToken)` zwraca `AuthorizedLoanQuery` albo `null` oznaczający odmowę. Zapytanie zawiera filtry użytkownika oraz alternatywy `LoanReadRestriction`: wewnątrz jednej alternatywy obowiązuje AND, między alternatywami OR. `null` w ograniczeniu oznacza brak ograniczenia danego pola, a pusta tablica produktów/kanałów oznacza brak dostępu. Zakres `All` nadal podlega ograniczeniom produktów i kanałów.
+`LoanQueryAuthorization.AuthorizeAsync(user, query, cancellationToken)` zwraca `AuthorizedLoanQuery` albo `null` oznaczający odmowę. Zapytanie zawiera filtry użytkownika oraz alternatywy `LoanAccess`: wewnątrz jednej alternatywy obowiązuje AND, między alternatywami OR. `null` w ograniczeniu oznacza brak ograniczenia danego pola, a pusta tablica produktów/kanałów oznacza brak dostępu. Zakres `All` nadal podlega ograniczeniom produktów i kanałów.
 
 `LoanApplicationReader` przyjmuje wyłącznie `AuthorizedLoanQuery`. To jedyne miejsce tłumaczące ograniczenia na EF Core; inny czytnik może zastosować je w SQL lub zewnętrznym API, przed paginacją i liczeniem wyników. Samo przekazanie parametrów do zewnętrznego API nie wystarcza, jeśli API nie potrafi wymusić całego zakresu. Paczka `ConfigurableAuthorization` pozostaje niezależna od warstwy danych.
 
-#### Własny scope dla listy
+#### Własny zakres dla zasobu i listy
 
-Autoryzacja zasobu przez `.Scope<MyScope>("MyScope")` nadal wymaga `IResourceScope<LoanApplicationResource>`. Aby ten scope przyznawał także dostęp do listy, dodaj w Loans implementację `ILoanReadScope` z tą samą nazwą i zarejestruj ją:
+Nowy zakres zwraca `LoanAccess`. Ta jedna wartość służy do sprawdzenia zasobu przez `Allows(resource)` i do filtrowania w czytniku. Jeśli ustalenie zakresu wymaga DI lub operacji asynchronicznej, implementuj `IResourceAccessScope<LoanAccess>` i zarejestruj go w `LoanAuthorizationRegistration`:
 
 ```csharp
-services.AddScoped<ILoanReadScope, MyLoanReadScope>();
+.Access<LoanAccess>()
+.Scope<MyLoanScope>("MyScope")
+.Constrain(LoanGrantConditions.Constrain);
 ```
 
-`Name` zwraca `"MyScope"`; `ResolveAsync(user, cancellationToken)` zwraca `LoanReadRestriction` opisujące zakres albo `null`, jeśli nie można ustalić dostępu. Implementacja może korzystać z DI, np. pobrać oddział z API. Produkty i kanały grantu oraz tokena są następnie automatycznie przecinane z tym zakresem. Przykładem jest `BranchLoanReadScope`, współdzielący ustalanie oddziału z `EmployeeBranchScope`.
+Biblioteka rejestruje `MyLoanScope` jako scoped. `ResolveAsync(user, cancellationToken)` zwraca `LoanAccess` albo `null` przy odmowie. Produkty i kanały grantu oraz claimów zawęża `Constrain` dla każdej alternatywy osobno. `LoanQueryAuthorization` pobiera gotowe alternatywy przez `ResourceAuthorization<LoanGrantOptions>.ResolveAccessAsync<LoanApplicationResource, LoanAccess>(...)`.
 
-Scope bez implementacji odczytu nie przyznaje dostępu do listy; inne obsługiwane granty mogą nadal przyznawać dostęp. Nazwy implementacji odczytu muszą być unikalne. Dowolnego kodu `AllowsAsync` nie da się automatycznie przetłumaczyć na zapytanie. Jeśli nowa reguła wymaga ograniczeń innych niż klient, oddział, produkt i kanał, rozszerz model zakresu, czytnik i testy zgodności z autoryzacją zasobu. Tak samo należy odwzorować dodatkowe warunki `.Require(...)`; w tym przykładzie wspólne reguły zapewnia `LoanGrantConditions`.
+Jeżeli zakres wymaga nowych pól, rozszerz `LoanAccess.Allows`, jego tłumaczenie w `LoanApplicationReader` oraz testy zgodności. Dowolnej funkcji sprawdzającej zasób nie da się automatycznie przetłumaczyć na zapytanie do bazy.
 
 Test tłumaczenia zapytań na PostgreSQL działa bez bazy. Test wykonania można włączyć, ustawiając `LOANS_TEST_POSTGRES` na connection string do testowego PostgreSQL przed `dotnet test`. Korzysta z tabeli tymczasowej w transakcji, bez migracji ani usuwania danych.
 
