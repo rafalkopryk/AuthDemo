@@ -7,6 +7,8 @@ Paczka ASP.NET Core (`net11.0`) do autoryzacji zasobów przez `IAuthorizationSer
 Skonfiguruj uwierzytelnianie, następnie zarejestruj zasób:
 
 ```csharp
+public sealed record Document(Guid? OwnerId, Guid? BranchId, string Channel);
+
 services.AddCreditAuthroization(options =>
 {
     options.Service("documents");
@@ -22,7 +24,7 @@ services.AddCreditAuthroization(options =>
 });
 ```
 
-`Document` jest zwykłą klasą lub rekordem. Nie implementuje interfejsu autoryzacji. Dla podstawowych zakresów nie potrzeba własnych `GrantOptions`, `AccessGrant` ani evaluatora. Aplikacja webowa dodatkowo wywołuje `AddAuthorization()` / `AddAuthorizationBuilder()`.
+`Document` jest zwykłą klasą lub rekordem. Nie implementuje interfejsu autoryzacji. Dla podstawowych zakresów nie potrzeba własnych `GrantOptions`, `AccessGrant` ani evaluatora. Aplikacja webowa dodatkowo wywołuje `AddAuthorization()` / `AddAuthorizationBuilder()` oraz uruchamia `UseAuthentication()` przed `UseAuthorization()`.
 
 ```json
 {
@@ -51,7 +53,7 @@ services.AddCreditAuthroization(options =>
 }
 ```
 
-`Service("documents")` wybiera wyłącznie granty `Services:documents`. Inne serwisy mogą mieć inne pola, uprawnienia i zakresy. Wspólne są `RoleMappings`, `ActorRoles` i nazwy ról. Każdy serwis waliduje własne granty. Rola bez sekcji danego serwisu nie daje mu dostępu. Bez `Service(...)` nadal można używać lokalnego formatu `Roles → Grants`.
+Token w tym przykładzie musi zawierać dokładnie jeden `actor_type=person` oraz claim `groups=reviewers`, aby rola `reviewer` dostała granty. `Service("documents")` wybiera wyłącznie granty `Services:documents`. Inne serwisy mogą mieć inne pola, uprawnienia i zakresy. Wspólne są `RoleMappings`, `ActorRoles` i nazwy ról. Każdy serwis waliduje własne granty. Rola bez sekcji danego serwisu nie daje mu dostępu. Bez `Service(...)` nadal można używać lokalnego formatu `Roles → Grants`.
 
 Autoryzacja następuje po pobraniu zasobu, przed wykonaniem operacji:
 
@@ -110,7 +112,7 @@ var visible = await resourceAuthorization.FilterAsync(
     user, documents, "documents.read", cancellationToken);
 ```
 
-Dla własnych opcji wstrzyknij `ResourceAuthorization<MyGrantOptions>`. Helper wyznacza granty raz, a potem używa tych samych reguł co `AuthorizeAsync`. Działa na załadowanych obiektach, bez tłumaczenia na SQL. Nie rozwiązuje stronicowania ani liczenia rekordów w bazie. Aktualna lista Loans korzysta z osobnego zakresu odczytu w serwisie Loans i przekłada go na zapytanie do bazy przed `Skip`/`Take`; paczka nie zależy od EF Core.
+Dla własnych opcji wstrzyknij `ResourceAuthorization<MyGrantOptions>`. Helper wyznacza granty raz, a potem używa tych samych reguł co `AuthorizeAsync`. Działa na załadowanych obiektach, bez tłumaczenia na SQL. Nie rozwiązuje stronicowania ani liczenia rekordów w bazie. Aktualna lista Loans korzysta z osobnego `LoanQueryAuthorization` w serwisie Loans i przekłada jego zakres odczytu na zapytanie do bazy przed `Skip`/`Take`. Ten mechanizm nie jest częścią API paczki; własny serwis musi sam zastosować ograniczenia w swojej warstwie odczytu.
 
 ## Dedykowany model zasobu
 
@@ -191,10 +193,14 @@ var result = await authorizationService.AuthorizeAsync(
 
 Biblioteka pracuje na już uwierzytelnionym `ClaimsPrincipal`. Nie weryfikuje podpisów tokenów. Rejestruje `IClaimsTransformation`, które klonuje tożsamości i odtwarza wewnętrzne role z zaufanych claimów. Transformacja jest idempotentna; oryginalny principal nie jest modyfikowany. Resolver stosuje tę samą transformację również przy wywołaniu poza HTTP.
 
+`RoleMappings` dopasowuje wartości istniejących claimów; nie pobiera ról z bazy lub API. Gdy rola pracownika zależy np. od XNUC, aplikacja najpierw ustala ją z zaufanego źródła i dodaje własny claim do uwierzytelnionej tożsamości, a następnie mapuje ten claim na rolę w konfiguracji. Przy błędzie lookupu nie dodawaj roli. Przychodzący claim o nazwie zarezerwowanej dla wyniku lookupu trzeba usunąć przed dodaniem własnej wartości. Zewnętrzny identyfikator aplikacji technicznej również musi pochodzić ze zweryfikowanego tokenu. Paczka usuwa przychodzące wewnętrzne claimy z prefiksem `app_` i sama odtwarza role aplikacji.
+
 `AuthorizationDefinition` określa dozwolone operacje i aktorów, claim aktora, claim roli oraz zastrzeżony prefiks wewnętrznych claimów. Domyślnie brak claimu aktora odmawia dostępu. Opcjonalne `DefaultActor` pozwala świadomie obsłużyć starsze tożsamości. Wielokrotny lub nieznany aktor zawsze odmawia dostępu. `ActorRoles` w konfiguracji umożliwia domyślne przypisanie ról wybranemu typowi aktora.
 
 Rejestruj bibliotekę po konfiguracji uwierzytelniania. Jeśli aplikacja ma już własne `IClaimsTransformation`, zastosuj jawną kompozycję transformacji, z `ConfiguredClaimsTransformation<TGrant>` po pozostałych transformacjach. Nadawanie ról przez bibliotekę zawsze wynika z jej konfiguracji i zweryfikowanych claimów wejściowych.
 
 Obsługiwana jest jedna definicja autoryzacji i jeden typ adaptera na kontener DI. Adapter może obsługiwać wiele rodzajów zasobów aplikacji; ponowna rejestracja zgłasza błąd zamiast nadpisywać konfigurację.
+
+Przy wspólnej sekcji `Authorization` serwisy dzielą `RoleMappings`, `ActorRoles` i nazwy ról, lecz `Service("nazwa")` wybiera granty tylko dla danego serwisu. Każdy serwis waliduje wszystkie wspólne mapowania względem zadeklarowanych u siebie typów aktorów. Jeśli zestawy aktorów się różnią, użyj oddzielnych sekcji przez parametr `configurationSection` w `AddCreditAuthroization`.
 
 Typowane opcje i walidacja startowa wykrywają nieznane uprawnienia, aktorów, role w mapowaniach oraz błędy zwrócone przez adapter. Nieznane pola konfiguracji są odrzucane. Konfiguracja jest wczytywana przez `IOptions` i wymaga restartu aplikacji po zmianie.
