@@ -10,7 +10,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../AuthDemo.ServiceDefaults/AuthDemo.ServiceDefaults.csproj" />
-    <ProjectReference Include="../ConfigurableAuthorization/ConfigurableAuthorization.csproj" />
+    <ProjectReference Include="../LightAuthorization/LightAuthorization.csproj" />
   </ItemGroup>
 
   <ItemGroup>

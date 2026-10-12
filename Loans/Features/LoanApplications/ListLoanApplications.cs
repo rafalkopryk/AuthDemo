@@ -1,5 +1,5 @@
 using System.Security.Claims;
-using ConfigurableAuthorization;
+using LightAuthorization;
 using Loans.Features.LoanApplications.Authorization;
 using Microsoft.AspNetCore.Authorization;
 
@@ -9,7 +9,7 @@ public sealed record ListLoanApplicationsQuery(int Skip = 0, int Take = 20, Guid
     string? Product = null, Guid? BranchId = null, string? Channel = null);
 
 internal sealed class ListLoanApplications(LoanApplicationReader reader, IAuthorizationService authorizationService,
-    LoanQueryAuthorization queryAuthorization)
+    IAccessResolver<LoanApplicationResource, LoanAccess> accessResolver)
 {
     public async Task<LoanApplicationResult<LoanApplication[]>> HandleAsync(
         ClaimsPrincipal user, ListLoanApplicationsQuery query, CancellationToken cancellationToken)
@@ -29,8 +29,10 @@ internal sealed class ListLoanApplications(LoanApplicationReader reader, IAuthor
         if (query.Channel is { } channel && !LoanChannels.IsValid(channel))
             return new LoanInvalid(new() { ["channel"] = ["Invalid channel."] });
 
-        var authorized = await queryAuthorization.AuthorizeAsync(user, query, cancellationToken);
-        if (authorized is null) return new LoanForbidden();
-        return new LoanSuccess<LoanApplication[]>(await reader.SearchAsync(authorized, cancellationToken));
+        var accesses = await accessResolver.ResolveAsync(user, LoanPermissions.Read, cancellationToken);
+        if (accesses.Count == 0 || query.ClientId is { } requested && !accesses.Any(access => access.ClientId is null || access.ClientId == requested))
+            return new LoanForbidden();
+
+        return new LoanSuccess<LoanApplication[]>(await reader.SearchAsync(query, accesses, cancellationToken));
     }
 }

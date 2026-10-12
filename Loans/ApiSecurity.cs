@@ -1,4 +1,4 @@
-using ConfigurableAuthorization;
+using LightAuthorization;
 using Loans.Features.LoanApplications.Authorization;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
@@ -7,8 +7,6 @@ namespace Loans;
 
 public static class ApiSecurity
 {
-    public const string ApplicationRoleClaim = "app_role";
-    public const string AnalystRole = "analyst";
     public const string ReadPolicy = "LoansRead";
     public const string CreatePolicy = "LoansCreate";
     public const string EditPolicy = "LoansEdit";
@@ -16,12 +14,6 @@ public static class ApiSecurity
     public const string ReadScope = "loans.read";
     public const string WriteScope = "loans.write";
     public const string TokenTypeClaim = "token_type";
-    public const string AllowedProductClaim = "allowed_product";
-    public const string AllowedChannelClaim = "allowed_channel";
-    public const string BranchIdClaim = "branch_id";
-    public const string BranchAdvisorRole = "branch_advisor";
-    public const string OperatorRole = "operator";
-    public const string SellerRole = "seller";
     public const string ClientIdClaim = "client_id";
 
     public static void AddApiSecurity(this WebApplicationBuilder builder)
@@ -43,7 +35,6 @@ public static class ApiSecurity
                 options.Authority = settings["Authority"];
                 options.Audience = settings["Audience"];
                 options.MapInboundClaims = false;
-                options.TokenValidationParameters.RoleClaimType = ApplicationRoleClaim;
                 options.RequireHttpsMetadata = true;
                 options.IncludeErrorDetails = builder.Environment.IsDevelopment();
                 options.TokenValidationParameters.ValidateIssuer = true;
@@ -55,7 +46,7 @@ public static class ApiSecurity
                 options.TokenValidationParameters.ClockSkew = TimeSpan.FromSeconds(30);
             });
 
-        builder.Services.AddLoanAuthorization();
+        builder.Services.AddLoanAuthorization(builder.Configuration);
         var authorization = builder.Services.AddAuthorizationBuilder()
             .SetFallbackPolicy(new AuthorizationPolicyBuilder()
                 .RequireAuthenticatedUser().Build());

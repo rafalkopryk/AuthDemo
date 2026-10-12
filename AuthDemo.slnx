@@ -1,6 +1,8 @@
 <Solution>
   <Project Path="ConfigurableAuthorization.Tests/ConfigurableAuthorization.Tests.csproj" />
   <Project Path="ConfigurableAuthorization/ConfigurableAuthorization.csproj" />
+  <Project Path="LightAuthorization/LightAuthorization.csproj" />
+  <Project Path="LightAuthorization.Tests/LightAuthorization.Tests.csproj" />
   <Project Path="AuthDemo.AppHost/AuthDemo.AppHost.csproj" />
   <Project Path="AuthDemo.ServiceDefaults/AuthDemo.ServiceDefaults.csproj" />
   <Project Path="Loans/Loans.csproj" />

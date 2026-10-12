@@ -1,5 +1,5 @@
 using System.Security.Claims;
-using ConfigurableAuthorization;
+using LightAuthorization;
 using Loans.Features.LoanApplications.Authorization;
 using Microsoft.AspNetCore.Authorization;
 
@@ -17,7 +17,7 @@ internal sealed class CreateLoanApplication(LoansDbContext dbContext, IAuthoriza
         var errors = request.Validate(requireChannel: true);
         if (errors.Count > 0) return new LoanInvalid(errors);
         var authorization = await authorizationService.AuthorizeAsync(user, LoanApplicationResource.From(request),
-            [new PermissionRequirement(LoanPermissions.Create)]);
+            [new ResourcePermissionRequirement(LoanPermissions.Create)]);
         if (!authorization.Succeeded) return new LoanForbidden();
 
         var entity = new LoanApplicationEntity

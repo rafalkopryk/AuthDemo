@@ -1,5 +1,5 @@
 using System.Security.Claims;
-using ConfigurableAuthorization;
+using LightAuthorization;
 using Loans.Features.LoanApplications.Authorization;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
@@ -18,7 +18,7 @@ internal sealed class UpdateLoanApplication(LoansDbContext dbContext, IAuthoriza
             .SingleOrDefaultAsync(item => item.Id == command.Id, cancellationToken);
         if (application is null) return new LoanNotFound();
         var authorization = await authorizationService.AuthorizeAsync(user, LoanApplicationResource.From(application),
-            [new PermissionRequirement(LoanPermissions.Edit)]);
+            [new ResourcePermissionRequirement(LoanPermissions.Edit)]);
         if (!authorization.Succeeded) return new LoanForbidden();
         var request = command.Application;
         var errors = request.Validate();

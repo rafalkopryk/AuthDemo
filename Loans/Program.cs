@@ -18,7 +18,7 @@ builder.Services.AddOpenApi(options => options.AddDocumentTransformer((document,
         Type = SecuritySchemeType.Http,
         Scheme = "bearer",
         BearerFormat = "JWT",
-        Description = "Paste a client JWT, technical JWT with loans.read / loans.write and optional product/channel restrictions, or employee JWT with seller, operator or branch_advisor role and branch_id (or employee_id with a branch resolver)."
+        Description = "Paste a client JWT with client_id or a technical JWT with loans.read / loans.write scope."
     };
     document.Security = [new OpenApiSecurityRequirement
     {

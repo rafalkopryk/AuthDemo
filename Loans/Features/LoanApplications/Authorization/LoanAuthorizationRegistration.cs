@@ -1,31 +1,21 @@
-using ConfigurableAuthorization;
+using LightAuthorization;
 
 namespace Loans.Features.LoanApplications.Authorization;
 
 internal static class LoanAuthorizationRegistration
 {
-    internal static void AddLoanAuthorization(this IServiceCollection services)
+    internal static void AddLoanAuthorization(this IServiceCollection services, IConfiguration configuration)
     {
-        services.AddScoped<LoanQueryAuthorization>();
-        services.AddCreditAuthroization<LoanGrantOptions>(options =>
+        services.AddLightAuthorization(options =>
         {
-            options.Service("loans");
-            options.Definition.ActorTypes.UnionWith(["client", "employee", "technical"]);
-            options.Definition.ActorClaimType = ApiSecurity.TokenTypeClaim;
-            options.Definition.DefaultActor = "client";
-            options.Definition.RoleClaimType = ApiSecurity.ApplicationRoleClaim;
-            options.ValidateWith(LoanGrantConditions.Validate);
-            options.EvaluateWhen(LoanGrantConditions.IsEligible);
+            options.MapRole("client", user => LoanIdentity.IsClient(user) && LoanIdentity.ClientId(user) is not null);
+            options.MapRoleMappings(configuration.GetSection("Authorization:RoleMappings"), LoanIdentity.Actor);
+            options.Roles(configuration.GetSection("Authorization:Roles"));
 
-            options.Resource<LoanApplicationResource>()
-                .Permissions(LoanPermissions.Read, LoanPermissions.Create, LoanPermissions.Edit, LoanPermissions.Submit)
-                .Access<LoanAccess>()
-                .Scope("All", _ => new())
-                .Scope("Own", user => IdentityClaims.ReadGuid(user, ApiSecurity.ClientIdClaim) is { } id
-                    ? new(ClientId: id) : null,
-                    eligible: user => IdentityClaims.ReadGuid(user, ApiSecurity.ClientIdClaim) is not null)
-                .Scope<EmployeeBranchScope>("OwnBranch", EmployeeBranchScope.CanEvaluate)
-                .Constrain(LoanGrantConditions.Constrain);
+            options.Resource<LoanApplicationResource>().Access<LoanAccess>()
+                .Map(access => access.ClientId, resource => resource.ClientId)
+                .Scope("Own", user => LoanIdentity.ClientId(user) is { } id ? new LoanAccess(id) : null)
+                .Scope("All", _ => new LoanAccess());
         });
     }
 }
